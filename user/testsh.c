@@ -366,7 +366,7 @@ t9(int *ok)
 int
 main(int argc, char *argv[])
 {
-  if(argc != 2){
+  if(argc != 2){ 
     fprintf(2, "Usage: testsh nsh\n");
     exit(-1);
   }
