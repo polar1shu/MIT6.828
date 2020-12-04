@@ -681,3 +681,22 @@ procdump(void)
     printf("\n");
   }
 }
+
+//handle page fault
+int handle_page_fault(struct proc* p, uint64 addr)
+{
+    if (addr >= p->sz)
+        return -1;
+    uint64 old_addr = PGROUNDDOWN(addr);
+    char *mem = kalloc();
+    if(mem == 0){
+      return -1;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable, old_addr, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      return -1;
+    }
+    //vmprintf(p->pagetable);
+    return 0;
+}

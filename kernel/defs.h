@@ -207,3 +207,11 @@ void lst_push(struct list*, void *);
 void *lst_pop(struct list*);
 void lst_print(struct list*);
 int lst_empty(struct list*);
+
+//vmprint print page table
+void vmprint(pagetable_t pagetable);
+
+//
+int handle_page_fault(struct proc* p, uint64 addr);
+
+
