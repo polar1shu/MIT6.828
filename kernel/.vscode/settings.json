@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "typeinfo": "c",
+        "cmath": "c",
+        "exception": "c",
+        "*.tcc": "c",
+        "defs.h": "c"
+    }
+}
