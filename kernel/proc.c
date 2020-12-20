@@ -123,6 +123,7 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->alarm_interval = 0;
   return p;
 }
 
@@ -462,6 +463,13 @@ scheduler(void)
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->scheduler, &p->context);
+        if (c->alarm_proc) {
+          c->proc = c->alarm_proc;
+          c->alarm_proc = 0;
+          c->proc->state = RUNNING;
+          c->proc->alarm_state = 1;
+          swtch(&c->scheduler, &c->proc->context);
+        }
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -680,4 +688,26 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+struct proc* proc_check_alarm(void) {
+  struct proc *p;
+
+  uint cticks;
+  acquire(&tickslock);
+  cticks = ticks;
+  release(&tickslock);
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED && p->state != ZOMBIE && p->alarm_interval && (cticks - p->alarm_last_tick) > p->alarm_interval && p->alarm_state == 0) {
+      goto found;
+    } else {
+      release(&p->lock);
+    }
+  }
+  return 0;
+
+  found:
+  return p;
 }
