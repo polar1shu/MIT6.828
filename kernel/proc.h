@@ -82,6 +82,21 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+//Define a structure corresponding to the VMA (virtual memory area) described in Lecture 15, 
+//recording the address, length, permissions, file, etc. 
+//for a virtual memory range created by mmap
+struct VMA
+{
+    uint64 vstart;
+    uint64 vend;
+    int length;
+    int prot;//access permissions 可写 可读
+    int flags;
+    int offset;//offset within file
+    int used;//是否可用
+    struct file *file;//指向某个文件   mapped file, if any
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -103,4 +118,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  struct VMA vmas[NVMA];
 };

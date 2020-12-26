@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "proc.h"
+#include "file.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -449,5 +454,138 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+// Look in the process table for an UNUSED proc.
+// If found, initialize state required to run in the kernel,
+// and return with p->lock held.
+// If there are no free procs, return 0.
+struct VMA* map_alloc()
+{
+    struct proc *p = myproc();
+    for (int i = 0; i < NVMA; ++i){
+        if (p->vmas[i].used == 0){
+            p->vmas[i].vstart = MMAP_VSTART + i * MMAP_SIZE;
+            return &p->vmas[i];
+        }
+    }
+    return 0;
+}
+
+uint64 sys_mmap(void) {
+    struct proc *p = myproc();
+    uint64 addr;
+    int length, prot, flag, fd, offset;
+
+    if (argaddr(0, &addr) < 0)
+        return -1;
+    
+    //给变量赋值，判断
+    if(argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flag) < 0
+        || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+        return -1;
+    
+    //you can assume that addr will always be zero, meaning that 
+    //the kernel should decide the virtual address at which to map the file
+    //offset it's the starting point in the file at which to map
+
+    struct file *f = p->ofile[fd];
+
+    if((flag & MAP_SHARED) && (prot & PROT_WRITE) && !f->writable)
+        return -1;
+
+    struct VMA *vma;
+    if ((vma = map_alloc()) != 0){
+        vma->vend = PGROUNDUP(vma->vstart + length);
+        vma->length = length;
+        vma->prot = prot;
+        vma->flags = flag;
+        vma->file = f;
+        vma->offset = offset;
+        vma->used = 1;
+
+        filedup(vma->file);
+        
+        return vma->vstart;
+    }
+    else{
+        return -1;
+    }
+}
+
+uint64 sys_munmap(void) {
+    struct proc *p = myproc();
+    uint64 addr;
+    int length;
+
+    if (argaddr(0, &addr) < 0 || argint(1, &length))
+        return -1;
+
+    if (addr < MMAP_VSTART || addr > MMAP_VEND)
+        return -1;
+    
+    uint64 vpage = PGROUNDDOWN(addr);
+    int map_pos = (vpage - MMAP_VSTART) / MMAP_SIZE;
+    struct VMA *vma = &p->vmas[map_pos];
+
+    if (!vma->used)
+        return -1;
+    
+    pte_t *pte;
+    uint64 pa;
+    for (uint64 va = vpage; va < addr + length; va+=PGSIZE) {
+        if ((pte = walk(p->pagetable, va, 0)) && (*pte & PTE_V)) {
+            pa = PTE2PA(*pte);
+            //dirty page
+            if((vma->flags & MAP_SHARED) && (*pte & PTE_D)){
+                uint64 file_start = va - vpage;
+                uint64 write_length = PGSIZE;
+                if (write_length > vma->length - file_start)
+                    write_length = vma->length - file_start;
+                struct file *f = vma->file;
+
+                begin_op(f->ip->dev);
+                ilock(f->ip);
+                writei(f->ip, 0, pa, file_start, write_length);
+                iunlock(f->ip);
+                end_op(f->ip->dev);
+            }
+            uvmunmap(p->pagetable, va, PGSIZE, 0);
+            kderef((void*)pa);
+        }
+    }
+    if (vma->vstart == addr && vma->length == length){
+        fileclose(vma->file);
+        vma->used = 0;
+    }else {
+        if (vma->vstart == addr)
+            vma->vstart = addr + length;
+        if (vma->vend == addr)
+            vma->vend = addr + length;
+    }
+    return 0;
+}
+
+void mmap_dup(pagetable_t pagetable, struct VMA *vma) {
+  static pte_t *pte;
+  uint64 pa;
+  for (uint64 va = vma->vstart; va < vma->vend; va += PGSIZE) {
+    if ((pte = walk(pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+      kref((void *)pa);
+    }
+  }
+}
+
+void mmap_dedup(pagetable_t pagetable, struct VMA *vma) {
+  static pte_t *pte;
+  uint64 pa;
+  for (uint64 va = vma->vstart; va < vma->vend; va += PGSIZE) {
+    if ((pte = walk(pagetable, va, 0)) && (*pte & PTE_V)) {
+      pa = PTE2PA(*pte);
+      uvmunmap(pagetable, va, PGSIZE, 0);
+      kderef((void *)pa);
+    }
   }
 }

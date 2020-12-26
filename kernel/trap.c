@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -70,14 +74,63 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15) {
+      // 13 is load page fault, 15 is store page fault
+      uint64 fault_vaddr = r_stval();
+      if (fault_vaddr >= MMAP_VSTART && fault_vaddr < MMAP_VEND) {
+          pagetable_t pageable = p->pagetable;
+          uint64 vpage = PGROUNDDOWN(fault_vaddr);
+          int map_pos = (vpage - MMAP_VSTART) / MMAP_SIZE;
+          struct VMA *vma = &p->vmas[map_pos];
+          uint64 map_start = vma->vstart;
+
+          printf("fault_vaddr: %d\n",vma->used,fault_vaddr);
+          //检查无效的访问
+          if (vma->used == 0 || fault_vaddr >= vma->vend) {
+              printf("usertrap(): invalid segfault pid=%d sepc=%p\n", p->pid, r_sepc());
+              p->killed = 1;
+              goto end;
+          }
+
+          uint64 file_start = vpage - map_start;
+          uint64 read_length = PGSIZE;
+          if (read_length > vma->length - file_start)
+            read_length = vma->length - file_start;
+          int prot = ((vma->prot & PROT_READ) ? PTE_R : 0) | ((vma->prot & PROT_WRITE) ? PTE_W : 0); 
+
+          char *mem = kalloc();
+          if (mem == 0) {
+              printf("usertrap(): no more physical page available\n");
+              p->killed = 1;
+              goto end;
+          }
+          struct file *f = vma->file;
+
+          memset(mem, 0, PGSIZE);
+          ilock(f->ip);
+          readi(f->ip, 0, (uint64)mem, file_start, read_length);
+          iunlock(f->ip);
+
+          if (mappages(pageable, vpage, PGSIZE, (uint64)mem, prot | PTE_U) != 0){
+              printf("usertrap: cannot map a page\n");
+              kfree(mem);
+              p->killed = 1;
+              goto end;
+          }
+      }else {
+          printf("usertrap(): unexpected scause %p (%s) pid=%d\n", r_scause(), scause_desc(r_scause()), p->pid);
+          printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+          p->killed = 1;
+      }
+  }
+  else {
     printf("usertrap(): unexpected scause %p (%s) pid=%d\n", r_scause(), scause_desc(r_scause()), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
-  if(p->killed)
-    exit(-1);
+  end:
+    if(p->killed)
+        exit(-1);
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)

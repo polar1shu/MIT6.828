@@ -275,6 +275,14 @@ fork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+
+  //Modify fork to ensure that the child has the same mapped regions as the parent.
+  for(i = 0; i < NVMA; ++i){
+      if (p->vmas[i].used) {
+          np->vmas[i] = p->vmas[i];
+          mmap_dup(np->pagetable, np->vmas);
+      }
+  }
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -332,6 +340,15 @@ exit(int status)
       fileclose(f);
       p->ofile[fd] = 0;
     }
+  }
+
+  //remove all pte related mmap
+  for(int i = 0; i < NVMA; ++i){
+      if (p->vmas[i].used){
+          struct VMA *vma = &p->vmas[i];
+          vma->used = 0;
+          mmap_dedup(p->pagetable, vma);
+      }
   }
 
   begin_op(ROOTDEV);
