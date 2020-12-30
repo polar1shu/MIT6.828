@@ -86,6 +86,67 @@ bad:
 // Add and wire in methods to handle closing, reading,
 // and writing for network sockets.
 //
+void sockclose(struct sock *so) {
+    acquire(&so->lock);
+    wakeup(&so->rxq);
+    release(&so->lock);
+
+    acquire(&lock);
+    struct sock *sockk = sockets;
+    if(sockk->next == 0)
+        sockets = 0;
+    while(sockk && sockk->next) {
+        if (sockk->next->raddr == so->raddr &&
+            sockk->next->lport == so->lport &&
+	        sockk->next->rport == so->rport) {
+            sockk->next = so->next;
+            break;
+        }
+        sockk = sockk->next;
+    }
+    release(&lock);
+
+    kfree((char*)so);
+}
+
+int sockwrite(struct sock *so, uint64 addr, int n){
+    struct proc *p = myproc();
+
+    struct mbuf *buf = mbufalloc(sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp));
+    mbufput(buf, n);
+
+    if(copyin(p->pagetable, buf->head, addr, n) == -1){
+        mbuffree(buf);
+        return -1;
+    }
+
+    net_tx_udp(buf, so->raddr, so->lport, so->rport);
+    return n;
+}
+
+int sockread(struct sock *so, uint64 addr, int n) {
+    struct proc *p = myproc();
+
+    acquire(&so->lock);
+
+    if (mbufq_empty(&so->rxq)) {
+        while(mbufq_empty(&so->rxq))
+            sleep(&so->rxq, &so->lock);
+    }
+
+    struct mbuf *buf = mbufq_pophead(&so->rxq);
+    int len = n < buf->len ? n : buf->len;
+
+    if(copyout(p->pagetable, addr, buf->head, len) == -1) {
+        release(&so->lock);
+        mbuffree(buf);
+        return -1;
+    }
+
+    release(&so->lock);
+    mbuffree(buf);
+    return len;
+}
 
 // called by protocol handler layer to deliver UDP packets
 void
@@ -98,5 +159,27 @@ sockrecvudp(struct mbuf *m, uint32 raddr, uint16 lport, uint16 rport)
   // any sleeping reader. Free the mbuf if there are no sockets
   // registered to handle it.
   //
-  mbuffree(m);
+  //mbuffree(m);
+  struct sock *so = sockets;
+  acquire(&lock);
+  while(so){
+    if (so->raddr == raddr &&
+        so->lport == lport &&
+	    so->rport == rport) {
+            break;
+    }
+    so = so->next;
+  }
+  release(&lock);
+
+  //没有套接字
+  if (so == 0) {
+      mbuffree(m);
+      return;
+  }
+
+  acquire(&so->lock);
+  mbufq_pushtail(&so->rxq, m);
+  release(&so->lock);
+  wakeup(&so->rxq);
 }
